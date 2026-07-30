@@ -1,0 +1,10 @@
+numerapi
+pandas
+numpy
+scipy
+scikit-learn
+joblib
+pyarrow
+catboost
+xgboost
+lightgbm
