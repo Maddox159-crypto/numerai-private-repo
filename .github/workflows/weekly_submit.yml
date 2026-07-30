@@ -1,0 +1,54 @@
+name: Weekly Numerai Submission
+
+on:
+  schedule:
+    # 화~토, 매일 12:03 UTC 실행 (라운드는 12:00 UTC에 열림, 3분 버퍼)
+    # 화~금: 13:00 UTC 마감(1시간 창)이라 최대한 빨리 실행하는 게 중요
+    # 토: 다음날 14:00 UTC까지 여유 있음
+    - cron: '3 12 * * 2-6'
+  workflow_dispatch:  # 수동으로도 실행 가능하게 (Actions 탭에서 Run workflow 버튼)
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 히스토리 파일 커밋을 위해 필요
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run inference and submit
+        env:
+          NUMERAI_PUBLIC_ID: ${{ secrets.NUMERAI_PUBLIC_ID }}
+          NUMERAI_SECRET_KEY: ${{ secrets.NUMERAI_SECRET_KEY }}
+        run: python infer_and_submit.py
+
+      - name: Commit updated history file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add era_pca_mean_history.json
+          git diff --staged --quiet || git commit -m "Update era pca mean history [skip ci]"
+          git push
+
+      - name: Notify on failure (Slack, optional)
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"⚠️ Numerai 제출 실패: $(date -u +%Y-%m-%dT%H:%M:%SZ) - repo: ${{ github.repository }}, run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+              "$SLACK_WEBHOOK_URL"
+          else
+            echo "SLACK_WEBHOOK_URL secret이 없어서 Slack 알림은 건너뜀 (GitHub 기본 이메일 알림은 자동으로 감)"
+          fi
