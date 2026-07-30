@@ -74,7 +74,20 @@ def clean_array(arr):
 # [4] live 데이터 로드 및 pca 변환
 # ============================================
 live_cols = ["id"] + selected_features
-live_df = pd.read_parquet(LIVE_PATH, columns=live_cols)
+live_df = pd.read_parquet(LIVE_PATH, columns=selected_features)
+
+# id가 index로 들어있는 경우 처리 (validation.parquet에서 겪었던 것과 동일한 문제)
+if live_df.index.name is not None or "id" not in live_df.columns:
+    live_df = live_df.reset_index()
+
+if "id" not in live_df.columns:
+    # 그래도 없으면 원본 parquet에서 id 컬럼을 명시적으로 다시 읽어옴
+    id_df = pd.read_parquet(LIVE_PATH, columns=["id"])
+    if id_df.index.name is not None or "id" not in id_df.columns:
+        id_df = id_df.reset_index()
+    live_df["id"] = id_df["id"].values
+
+print(f"live_df 컬럼 확인: id 포함 여부 = {'id' in live_df.columns}")
 
 X = clean_array(live_df[selected_features].to_numpy(dtype=np.float32))
 X_scaled = scaler.transform(X)
