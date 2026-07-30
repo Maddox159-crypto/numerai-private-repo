@@ -1,0 +1,43 @@
+name: Ridge XG Cat Submission (Experimental)
+
+on:
+  schedule:
+    # ensemble4와 동일한 스케줄 - 화~토, 매일 12:25 UTC
+    # (같은 12:20에 두 워크플로우가 동시에 뜨는 걸 피하려고 5분 띄움)
+    - cron: '25 12 * * 2-6'
+  workflow_dispatch:
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run inference and submit (ridge_xg_cat)
+        env:
+          NUMERAI_PUBLIC_ID: ${{ secrets.NUMERAI_PUBLIC_ID }}
+          NUMERAI_SECRET_KEY: ${{ secrets.NUMERAI_SECRET_KEY }}
+        run: python infer_and_submit_ridge_xg_cat.py
+
+      - name: Notify on failure (Slack, optional)
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"⚠️ ridge_xg_cat 제출 실패: $(date -u +%Y-%m-%dT%H:%M:%SZ) - repo: ${{ github.repository }}, run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+              "$SLACK_WEBHOOK_URL"
+          else
+            echo "SLACK_WEBHOOK_URL secret이 없어서 Slack 알림은 건너뜀"
+          fi
