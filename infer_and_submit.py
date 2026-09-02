@@ -31,6 +31,11 @@ os.makedirs(DATA_DIR, exist_ok=True)
 NEUTRALIZATION_PROPORTION = 0.3
 MODEL_ID_NAME = "esaa_maddox"
 
+# ↓↓↓ 여기에 로그 추가(20260903에 추가함) ↓↓↓
+script_start_utc = datetime.now(timezone.utc)
+print(f"[LOG] 스크립트 시작 시각 (UTC): {script_start_utc.isoformat()}", flush=True)
+# ↑↑↑ 여기까지 ↑↑↑
+
 # ============================================
 # [1] Numerai API 인증 (GitHub Secrets에서 읽음)
 # ============================================
@@ -216,11 +221,11 @@ submission_df = pd.DataFrame({
 print(f"neutralize({NEUTRALIZATION_PROPORTION}) 적용 완료, submission shape: {submission_df.shape}")
 print(f"prediction 범위: {submission_df['prediction'].min():.6f} ~ {submission_df['prediction'].max():.6f}")
 
-
-# ============================================
+# =========================20260903수정=======
 # [9] 제출 (일시적 오류 대비 재시도 포함)
 # ============================================
 import time
+from datetime import datetime, timezone  # 파일 맨 위에 이미 import했다면 생략 가능
 
 SUBMIT_PATH = os.path.join(DATA_DIR, "submission.csv")
 submission_df.to_csv(SUBMIT_PATH, index=False)
@@ -228,18 +233,21 @@ submission_df.to_csv(SUBMIT_PATH, index=False)
 MAX_RETRIES = 4
 RETRY_WAIT_SECONDS = 30
 
+before_upload = datetime.now(timezone.utc)
+print(f"[LOG] 업로드 시도 시작 시각 (UTC): {before_upload.isoformat()}", flush=True)
+
 for attempt in range(1, MAX_RETRIES + 1):
     try:
         napi.upload_predictions(SUBMIT_PATH, model_id=MODEL_ID)
+        after_upload = datetime.now(timezone.utc)
         print(f"Numerai 제출 완료 (시도 {attempt}/{MAX_RETRIES})")
+        print(f"[LOG] 업로드 완료 시각 (UTC): {after_upload.isoformat()}", flush=True)
         break
     except Exception as e:
         print(f"제출 실패 (시도 {attempt}/{MAX_RETRIES}): {e}")
         if attempt == MAX_RETRIES:
-            raise  # 마지막 시도까지 실패하면 워크플로우 자체를 실패시켜서 알림 트리거
+            raise
         time.sleep(RETRY_WAIT_SECONDS)
-
-
 # ============================================
 # [10] 이번 주 pca 평균을 히스토리에 추가 저장 (다음 주 lag용)
 # ============================================
