@@ -34,7 +34,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add era_pca_mean_history.json
+          git add era_pca_mean_history.json last_submitted_round.json
           git diff --staged --quiet || git commit -m "Update era pca mean history [skip ci]"
           git push
 
