@@ -47,7 +47,23 @@ napi = numerapi.NumerAPI(public_id=NUMERAI_PUBLIC_ID, secret_key=NUMERAI_SECRET_
 MODEL_ID = napi.get_models()[MODEL_ID_NAME]
 print(f"model_id: {MODEL_ID}")
 
+import sys
+import json
 
+LAST_SUBMIT_ROUND_PATH = "last_submitted_round.json"
+
+current_round = napi.get_current_round()
+print(f"[LOG] 현재 라운드 번호: {current_round}", flush=True)
+
+if os.path.exists(LAST_SUBMIT_ROUND_PATH):
+    with open(LAST_SUBMIT_ROUND_PATH) as f:
+        last_submitted_round = json.load(f).get("round")
+else:
+    last_submitted_round = None
+
+if last_submitted_round == current_round:
+    print(f"[LOG] 라운드 {current_round}는 이미 제출 완료됨 — 스킵하고 종료", flush=True)
+    sys.exit(0)
 # ============================================
 # [2] live.parquet 다운로드
 # ============================================
@@ -243,6 +259,8 @@ for attempt in range(1, MAX_RETRIES + 1):
         after_upload = datetime.now(timezone.utc)
         print(f"Numerai 제출 완료 (시도 {attempt}/{MAX_RETRIES})")
         print(f"[LOG] 업로드 완료 시각 (UTC): {after_upload.isoformat()}", flush=True)
+        with open(LAST_SUBMIT_ROUND_PATH, "w") as f:
+            json.dump({"round": current_round}, f)
         break
     except Exception as e:
         print(f"제출 실패 (시도 {attempt}/{MAX_RETRIES}): {e}")
