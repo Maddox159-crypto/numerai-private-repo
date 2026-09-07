@@ -2,12 +2,10 @@ name: Weekly Numerai Submission
 
 on:
   schedule:
-    # 화~토, 매일 12:20 UTC 실행
-    # 실측 결과: 라운드는 약 12:16 UTC에 열리고 13:25 UTC 마감 (테스트로 확인된 실제 시간)
-    # 열린 직후(4분 버퍼) 실행해서 화~금의 좁은 창을 확실히 잡음
-    - cron: '20 12 * * 2-6'
-  workflow_dispatch:  # 수동으로도 실행 가능하게 (Actions 탭에서 Run workflow 버튼)
-
+  # 화~토, 12:10부터 13:20까지 10분 간격으로 트리거 (라운드 오픈 12:16 대비 안전 마진)
+  - cron: '10,20,30,40,50 12 * * 2-6'
+  - cron: '0,10,20 13 * * 2-6'
+  workflow_dispatch:
 jobs:
   submit:
     runs-on: ubuntu-latest
