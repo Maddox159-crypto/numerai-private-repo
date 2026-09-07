@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import numerapi
 from scipy.stats import norm
+from datetime import datetime, timezone
 
 # ============================================
 # 경로 설정
