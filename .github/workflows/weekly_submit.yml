@@ -2,13 +2,13 @@ name: Weekly Numerai Submission
 
 on:
   schedule:
-  # 화~토, 라운드 창(12:16~13:25 UTC) 전체에 걸쳐 4번 분산 트리거
-  # + 각 job 내부에서도 최대 18분 자체 재시도 (infer_and_submit.py 참고)
-  - cron: '5 12 * * 2-6'
-  - cron: '35 12 * * 2-6'
-  - cron: '5 13 * * 2-6'
-  - cron: '20 13 * * 2-6'
-workflow_dispatch:
+    # 화~토, 라운드 창(12:16~13:25 UTC) 전체에 걸쳐 4번 분산 트리거
+    # + 각 job 내부에서도 최대 18분 자체 재시도 (infer_and_submit.py 참고)
+    - cron: '5 12 * * 2-6'
+    - cron: '35 12 * * 2-6'
+    - cron: '5 13 * * 2-6'
+    - cron: '20 13 * * 2-6'
+  workflow_dispatch:
 jobs:
   submit:
     runs-on: ubuntu-latest
