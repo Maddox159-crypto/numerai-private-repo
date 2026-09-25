@@ -4,16 +4,23 @@ infer_and_submit.py
 매주 실행되는 라이브 추론 + 제출 스크립트.
 - live.parquet 다운로드
 - scaler/pca transform (fit 아님)
-- lag1/lag2: 히스토리 2주 이상 쌓이면 실제 값, 아니면 0으로 채움
+- lag1/lag2: 히스토리에서 7일 전 / 14일 전 날짜의 era 평균 사용 (학습 시 주간 era lag와 일치)
 - 8개 base model 예측 -> rank-average (ensemble4)
 - feature neutralization (proportion=0.3, pca_0~499 기준)
 - napi.upload_predictions()
-- 이번 주 pca 평균을 히스토리에 추가 저장 (다음 주를 위해)
+- 이번 라운드 pca 평균을 히스토리에 추가 저장 (이후 라운드를 위해)
 
 20260922 수정: [2]~[9] 전체를 재시도 루프로 감쌈.
   - 외부 GH Actions cron이 라운드 창(12:16~13:25 UTC)을 4번 분산 트리거하고,
   - 각 job은 내부에서 최대 MAX_WAIT_MINUTES까지 스스로 재시도하며 버팀
   - 두 안전장치를 겹쳐서 late 확률을 최소화
+
+20260925 수정: lag 시간 단위 train/serve 불일치 수정.
+  - 기존: history_dates[-1], [-2] = 어제/그저께 라운드 (라운드가 화~토 매일이라 '일' 단위 lag)
+  - 학습: era가 주 단위라 lag1 = 1주 전, lag2 = 2주 전
+  - 변경: 오늘 기준 7일 전 / 14일 전에 가장 가까운 날짜(±LAG_TOLERANCE_DAYS)를 골라 사용
+  - 히스토리 보관 개수 10 -> 20 (14일 전 값이 결측/실패일에도 남아있도록)
+  - ※ era 정렬 버그 수정 후 재학습한 모델 파일과 반드시 "같이" 배포할 것
 """
 
 import os
@@ -24,7 +31,7 @@ import numpy as np
 import pandas as pd
 import numerapi
 from scipy.stats import norm
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 # ============================================
 # 경로 설정
@@ -37,6 +44,12 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 NEUTRALIZATION_PROPORTION = 0.3
 MODEL_ID_NAME = "esaa_maddox"
+
+# lag 설정 (학습 때 era는 주 단위 -> lag1 = 7일 전, lag2 = 14일 전)
+LAG1_DAYS = 7
+LAG2_DAYS = 14
+LAG_TOLERANCE_DAYS = 3   # 정확히 그 날짜가 없으면 ±3일 안에서 가장 가까운 날짜 사용
+HISTORY_KEEP = 20        # 화~토 5회/주 기준 약 4주치
 
 script_start_utc = datetime.now(timezone.utc)
 print(f"[LOG] 스크립트 시작 시각 (UTC): {script_start_utc.isoformat()}", flush=True)
@@ -87,6 +100,35 @@ FEATURES = pca_cols + lag1_cols + lag2_cols  # 1500개, 학습 때와 동일한 
 
 def clean_array(arr):
     return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def pick_lag_mean(history, today_date, days_back, n_components, tolerance=LAG_TOLERANCE_DAYS):
+    """
+    history: {"YYYY-MM-DD": [pca mean ...]}
+    today_date 기준 days_back일 전에 가장 가까운 날짜의 값을 반환.
+    ±tolerance일 안에 후보가 없으면 0 벡터 반환.
+    동률이면 더 과거 날짜를 선택 (미래 정보가 섞이지 않도록 보수적으로).
+    반환: (np.ndarray, 선택된 날짜 문자열 또는 None)
+    """
+    candidates = []
+    for key in history.keys():
+        try:
+            d = date.fromisoformat(key)
+        except ValueError:
+            continue
+        age = (today_date - d).days
+        if age <= 0:
+            continue  # 오늘/미래 값은 lag로 쓰지 않음
+        diff = abs(age - days_back)
+        if diff <= tolerance:
+            candidates.append((diff, -age, key))  # diff 작은 순, 동률이면 age 큰(더 과거) 순
+
+    if not candidates:
+        return np.zeros(n_components, dtype=np.float32), None
+
+    candidates.sort()
+    chosen_key = candidates[0][2]
+    return np.array(history[chosen_key], dtype=np.float32), chosen_key
 
 
 # ============================================
@@ -143,7 +185,7 @@ while True:
         print(f"live pca 변환 완료: {pca_df.shape}", flush=True)
 
         # ============================================
-        # [5] lag1/lag2 처리 - 히스토리 2주 이상이면 실제 값, 아니면 0
+        # [5] lag1/lag2 처리 - 7일 전 / 14일 전 (학습 시 주간 era lag와 동일한 간격)
         # ============================================
         if os.path.exists(HISTORY_PATH):
             with open(HISTORY_PATH) as f:
@@ -151,21 +193,14 @@ while True:
         else:
             history = {}
 
-        history_dates = sorted(history.keys())
-        print(f"현재 히스토리에 쌓인 라운드 수: {len(history_dates)}", flush=True)
+        print(f"현재 히스토리에 쌓인 라운드 수: {len(history)}", flush=True)
 
-        if len(history_dates) >= 2:
-            lag1_mean = np.array(history[history_dates[-1]], dtype=np.float32)
-            lag2_mean = np.array(history[history_dates[-2]], dtype=np.float32)
-            print("lag1/lag2: 실제 히스토리 값 사용", flush=True)
-        elif len(history_dates) == 1:
-            lag1_mean = np.array(history[history_dates[-1]], dtype=np.float32)
-            lag2_mean = np.zeros(n_components, dtype=np.float32)
-            print("lag1: 실제 값, lag2: 0 (히스토리 1주치만 존재)", flush=True)
-        else:
-            lag1_mean = np.zeros(n_components, dtype=np.float32)
-            lag2_mean = np.zeros(n_components, dtype=np.float32)
-            print("lag1/lag2: 0으로 채움 (히스토리 없음)", flush=True)
+        today_date = datetime.now(timezone.utc).date()
+        lag1_mean, lag1_key = pick_lag_mean(history, today_date, LAG1_DAYS, n_components)
+        lag2_mean, lag2_key = pick_lag_mean(history, today_date, LAG2_DAYS, n_components)
+
+        print(f"[LOG] lag1 ({LAG1_DAYS}일 전 목표): {lag1_key if lag1_key else '후보 없음 -> 0으로 채움'}", flush=True)
+        print(f"[LOG] lag2 ({LAG2_DAYS}일 전 목표): {lag2_key if lag2_key else '후보 없음 -> 0으로 채움'}", flush=True)
 
         for i, col in enumerate(lag1_cols):
             pca_df[col] = lag1_mean[i]
@@ -281,7 +316,7 @@ while True:
 
 
 # ============================================
-# [10] 이번 주 pca 평균을 히스토리에 추가 저장 (다음 주 lag용)
+# [10] 이번 라운드 pca 평균을 히스토리에 추가 저장 (이후 라운드 lag용)
 # 제출이 성공(break)했을 때만 이 지점에 도달함
 # ============================================
 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -295,12 +330,12 @@ else:
 
 history[today] = this_week_pca_mean
 
-# 히스토리가 너무 커지지 않도록 최근 10주치만 유지
-if len(history) > 10:
-    for old_date in sorted(history.keys())[:-10]:
+# 최근 HISTORY_KEEP개만 유지 (14일 전 값이 결측일에도 남아있도록 넉넉히)
+if len(history) > HISTORY_KEEP:
+    for old_date in sorted(history.keys())[:-HISTORY_KEEP]:
         del history[old_date]
 
 with open(HISTORY_PATH, "w") as f:
     json.dump(history, f)
 
-print(f"히스토리 저장 완료 ({today} 추가, 현재 {len(history)}주치 보관 중)", flush=True)
+print(f"히스토리 저장 완료 ({today} 추가, 현재 {len(history)}개 보관 중)", flush=True)
