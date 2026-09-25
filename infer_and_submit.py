@@ -21,6 +21,11 @@ infer_and_submit.py
   - 변경: 오늘 기준 7일 전 / 14일 전에 가장 가까운 날짜(±LAG_TOLERANCE_DAYS)를 골라 사용
   - 히스토리 보관 개수 10 -> 20 (14일 전 값이 결측/실패일에도 남아있도록)
   - ※ era 정렬 버그 수정 후 재학습한 모델 파일과 반드시 "같이" 배포할 것
+
+20260925 수정 (2):
+  - 스킵 체크: "오늘 이미 제출"일 때만 즉시 종료, "새 라운드 아직 안 열림"이면 루프 안에서 대기
+  - last_submitted_round.json에 date 필드 추가
+  - xgboost params의 device를 cpu로 강제 (Colab GPU 학습 -> GH Actions CPU 추론)
 """
 
 import os
@@ -68,18 +73,28 @@ import sys
 
 LAST_SUBMIT_ROUND_PATH = "last_submitted_round.json"
 
-current_round = napi.get_current_round()
-print(f"[LOG] 현재 라운드 번호: {current_round}", flush=True)
+today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 if os.path.exists(LAST_SUBMIT_ROUND_PATH):
     with open(LAST_SUBMIT_ROUND_PATH) as f:
-        last_submitted_round = json.load(f).get("round")
+        _last = json.load(f)
+    last_submitted_round = _last.get("round")
+    last_submitted_date = _last.get("date")  # 20260925 추가 (예전 파일엔 없음)
 else:
     last_submitted_round = None
+    last_submitted_date = None
 
-if last_submitted_round == current_round:
-    print(f"[LOG] 라운드 {current_round}는 이미 제출 완료됨 — 스킵하고 종료", flush=True)
+# 20260925 수정: "오늘 이미 제출함"과 "새 라운드가 아직 안 열림"을 구분
+#   - 예전 코드는 둘 다 round 번호가 같아서 무조건 종료 -> 12:05 트리거가 라운드 오픈(12:16)을
+#     기다리지 않고 즉시 끝나버려서, job 내부 재시도 루프가 사실상 무용지물이었음
+#   - 이제: 오늘 날짜로 이미 제출했으면 즉시 종료, 아니면 재시도 루프 안에서 새 라운드를 기다림
+if last_submitted_date == today_str:
+    print(f"[LOG] 오늘({today_str}) 라운드 {last_submitted_round} 이미 제출 완료 — 스킵하고 종료", flush=True)
     sys.exit(0)
+
+
+class RoundNotOpenYet(Exception):
+    pass
 
 
 # ============================================
@@ -152,6 +167,12 @@ while True:
     print(f"[LOG] === 시도 {attempt_num} 시작 (경과 {elapsed_minutes:.1f}분) ===", flush=True)
 
     try:
+        # 새 라운드가 열렸는지 확인 (안 열렸으면 대기 후 재시도)
+        current_round = napi.get_current_round()
+        print(f"[LOG] 현재 라운드 번호: {current_round}", flush=True)
+        if current_round == last_submitted_round:
+            raise RoundNotOpenYet(f"라운드 {current_round}는 지난번에 제출한 라운드 — 새 라운드 아직 안 열림")
+
         # ============================================
         # [2] live.parquet 다운로드
         # ============================================
@@ -223,6 +244,8 @@ while True:
         import xgboost as xgb
         with open(os.path.join(MODELS_DIR, "xgboost_params.json")) as f:
             xgb_params = json.load(f)
+        # 20260925: Colab에서 GPU로 학습해 params에 device='cuda'가 저장돼 있음 -> GH Actions는 CPU라 강제로 cpu
+        xgb_params["device"] = "cpu"
         xgb_model = xgb.XGBRegressor(**xgb_params)
         xgb_model.load_model(os.path.join(MODELS_DIR, "xgboost_model.json"))
         predictions["xgboost"] = xgb_model.predict(X_full_live)
@@ -298,7 +321,7 @@ while True:
         print(f"[LOG] 업로드 완료 시각 (UTC): {after_upload.isoformat()}", flush=True)
 
         with open(LAST_SUBMIT_ROUND_PATH, "w") as f:
-            json.dump({"round": current_round}, f)
+            json.dump({"round": current_round, "date": today_str}, f)
 
         # 성공했으면 루프 탈출 — 이 아래 [10]으로 진행
         break
@@ -309,6 +332,8 @@ while True:
 
         if elapsed_minutes >= MAX_WAIT_MINUTES:
             print(f"[LOG] 최대 대기 시간({MAX_WAIT_MINUTES}분) 초과 — 이번 job은 포기, 다음 트리거에 넘김", flush=True)
+            if isinstance(e, RoundNotOpenYet):
+                sys.exit(0)  # 라운드가 안 열린 건 에러가 아니므로 빨간 X 없이 정상 종료
             raise
 
         print(f"[LOG] {RETRY_INTERVAL_SECONDS}초 대기 후 재시도", flush=True)
